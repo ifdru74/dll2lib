@@ -44,6 +44,8 @@ namespace dll2lib
 
     class Program
     {
+        static bool bx64Ddumper = false;    // will try to use x64 dumper if true
+        static bool bVerbose = false;       // will produce some additional ouput
         private static readonly string[] PRIVATES = 
         {
             "DllCanUnloadNow",
@@ -68,21 +70,44 @@ namespace dll2lib
             if (args.Length < 1) 
                 return Usage();
 
+            bx64Ddumper = (IntPtr.Size == 8);   // set from runtime mode
+            bVerbose = false;
             var dllpath = "";
             var cleanfiles = true;
             foreach (var arg in args)
             {
-                if (arg.ToLower() == "/noclean")
-                    cleanfiles = false;
-                else if (dllpath.Length == 0)
-                    dllpath = arg;
-                else
-                    return Usage();
+                switch(arg.ToLower())
+                {
+                    case "/noclean":
+                        cleanfiles = false;
+                        break;
+                    case "/x64":
+                        bx64Ddumper = true;
+                        break;
+                    case "/verbose":
+                        bVerbose = true;
+                        break;
+                    case "/help":
+                    case "-help":
+                    case "--help":
+                        return Usage();
+                    default:
+                        if (arg[0] == '/')
+                        {
+                            Console.WriteLine(string.Format("Unknown command line argument: {0}", arg));
+                            return Usage();
+                        }
+                        dllpath = arg;
+                        break;
+                }
             }
-
             if (!File.Exists(dllpath))
                 return Usage(string.Format("Could not find input file {0}", dllpath));
-
+            if (bVerbose)
+            {
+                Console.WriteLine(string.Format("Use '{0}' dumpbin.exe", (bx64Ddumper?"x64":"x86")));
+                Console.WriteLine(string.Format("File to process: '{0}'", dllpath));
+            }
             var index = dllpath.LastIndexOf('.');
             var dllname = index >= 0 ? dllpath.Substring(0, index) : dllpath;
 
@@ -130,13 +155,70 @@ namespace dll2lib
                 if (cleanfiles && File.Exists(defpath))
                     File.Delete(defpath);
             }
-
+            if(bVerbose)
+                Console.WriteLine(string.Format("File '{0}' processed successfully", dllpath));
             return 0;
+        }
+        /**
+         * tried to find executable name in %PATH% or at lical drives
+         */
+        private static string getExecutablePath(string executableName)
+        {
+            string path = Environment.GetEnvironmentVariable("PATH");
+            // %PATH% lookup
+            string[] pElements = path.Split(System.IO.Path.PathSeparator);
+            foreach(String pe in pElements)
+            {
+                if (Directory.Exists(pe))
+                {
+                    if(File.Exists(pe + Path.DirectorySeparatorChar + executableName + ".exe"))
+                    {
+                        if (bVerbose)
+                            Console.WriteLine(string.Format("{0} found in PATH at: '{1}'", executableName, pe));
+                        return executableName;  // found in path
+                    }
+                }
+            }
+            if (bVerbose)
+                Console.WriteLine(string.Format("No {0} present in PATH - try to acquire it from '\\Program Files (x86)'", executableName));
+            // local HDD lookup
+            try
+            {
+                DriveInfo[] drives = DriveInfo.GetDrives();
+                foreach(DriveInfo d in drives)
+                {
+                    if (d.DriveType != DriveType.Fixed)
+                        continue;
+                    DirectoryInfo dir = new DirectoryInfo(d.ToString() + "Program Files (x86)\\Microsoft Visual Studio");
+                    FileInfo[] files = dir.GetFiles(executableName, SearchOption.AllDirectories);
+                    if(files.Count()>0)
+                    {
+                        string pattern = Path.DirectorySeparatorChar + "x86";
+                        if (bx64Ddumper)
+                            pattern = Path.DirectorySeparatorChar + "x64";
+                        foreach (FileInfo fi in files)
+                        {
+                            if(fi.DirectoryName.IndexOf(pattern)>0)
+                            {
+                                if (bVerbose)
+                                    Console.WriteLine(string.Format("{0} detected at: '{1}'", executableName, fi.DirectoryName));
+                                executableName = fi.FullName;
+                                return executableName;  // found at local HDD
+                            }
+                        }
+                    }
+                }
+
+            }   catch(Exception e)
+            {
+                Console.WriteLine(string.Format("Unable to find {0} at local HDDs Error:'{1}'", executableName, e.ToString()));
+            }
+            return executableName;
         }
 
         private static void RunDumpbin(string dllpath, string dmppath)
         {
-            var procinfo = new ProcessStartInfo("dumpbin", string.Format("/out:{0} /exports {1}", dmppath, dllpath));
+            var procinfo = new ProcessStartInfo(getExecutablePath("dumpbin.exe"), string.Format("/out:\"{0}\" /exports \"{1}\"", dmppath, dllpath));
             procinfo.UseShellExecute = false;
             var dumpbin = Process.Start(procinfo);
             dumpbin.WaitForExit();
@@ -146,7 +228,7 @@ namespace dll2lib
 
         private static void RunLib(string defpath, string libpath)
         {
-            var procinfo = new ProcessStartInfo("lib", string.Format("/machine:arm /def:{0} /out:{1}", defpath, libpath));
+            var procinfo = new ProcessStartInfo(getExecutablePath("lib.exe"), string.Format("/machine:arm /def:\"{0}\" /out:\"{1}\"", defpath, libpath));
             procinfo.UseShellExecute = false;
             var lib = Process.Start(procinfo);
             lib.WaitForExit();
@@ -224,7 +306,9 @@ namespace dll2lib
                 Console.WriteLine();
                 Console.WriteLine("  options:");
                 Console.WriteLine();
-                Console.WriteLine("    /NOCLEAN        don't delete intermediate files");
+                Console.WriteLine("    /noclean        don't delete intermediate files");
+                Console.WriteLine("    /x64            use x64 version of dumpbin.exe");
+                Console.WriteLine("    /verbose        produce some additional output");
             }
             return -1;
         }
